@@ -8,7 +8,7 @@ use std::{io, thread};
 use futures_util::future::TryFutureExt;
 use lazy_static::lazy_static;
 use rustls::ClientConfig;
-use rustls_pemfile::{certs, rsa_private_keys};
+use rustls_pemfile::{certs, private_key};
 use tokio::io::{copy, split, AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::oneshot;
@@ -17,13 +17,11 @@ use tokio_rustls::{LazyConfigAcceptor, TlsAcceptor, TlsConnector};
 
 lazy_static! {
     static ref TEST_SERVER: (SocketAddr, &'static str, &'static [u8]) = {
-        let cert = certs(&mut BufReader::new(Cursor::new(utils::CERT)))
+        let cert = certs(&mut BufReader::new(Cursor::new(utils::CHAIN)))
             .map(|result| result.unwrap())
             .collect();
-        let key = rsa_private_keys(&mut BufReader::new(Cursor::new(utils::RSA)))
-            .next()
-            .unwrap()
-            .unwrap();
+        let key = private_key(&mut BufReader::new(Cursor::new(utils::EE_KEY)))
+            .unwrap().unwrap();
 
         let config = rustls::ServerConfig::builder()
             .with_no_client_auth()
