@@ -8,10 +8,6 @@ mod utils {
 
     #[allow(dead_code)]
     pub fn make_configs() -> (Arc<ServerConfig>, Arc<ClientConfig>) {
-        const CERT: &str = include_str!("certs/end.cert");
-        const CHAIN: &str = include_str!("certs/end.chain");
-        const RSA: &str = include_str!("certs/end.rsa");
-
         let cert = certs(&mut BufReader::new(Cursor::new(CERT)))
             .map(|result| result.unwrap())
             .collect();
@@ -61,4 +57,8 @@ mod utils {
 
         Ok(())
     }
+
+    pub const CERT: &str = include_str!("certs/end.cert");
+    pub const CHAIN: &str = include_str!("certs/end.chain");
+    pub const RSA: &str = include_str!("certs/end.rsa");
 }

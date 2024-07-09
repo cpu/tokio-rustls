@@ -15,16 +15,12 @@ use tokio::sync::oneshot;
 use tokio::{runtime, time};
 use tokio_rustls::{LazyConfigAcceptor, TlsAcceptor, TlsConnector};
 
-const CERT: &str = include_str!("certs/end.cert");
-const CHAIN: &[u8] = include_bytes!("certs/end.chain");
-const RSA: &str = include_str!("certs/end.rsa");
-
 lazy_static! {
     static ref TEST_SERVER: (SocketAddr, &'static str, &'static [u8]) = {
-        let cert = certs(&mut BufReader::new(Cursor::new(CERT)))
+        let cert = certs(&mut BufReader::new(Cursor::new(utils::CERT)))
             .map(|result| result.unwrap())
             .collect();
-        let key = rsa_private_keys(&mut BufReader::new(Cursor::new(RSA)))
+        let key = rsa_private_keys(&mut BufReader::new(Cursor::new(utils::RSA)))
             .next()
             .unwrap()
             .unwrap();
@@ -74,7 +70,7 @@ lazy_static! {
         });
 
         let addr = recv.recv().unwrap();
-        (addr, "foobar.com", CHAIN)
+        (addr, "foobar.com", utils::CHAIN.as_ref())
     };
 }
 
