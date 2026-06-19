@@ -249,10 +249,6 @@ pub struct FallibleConnect<IO> {
     timeout: Option<HandshakeTimeout>,
 }
 
-fn handshake_timeout_error() -> io::Error {
-    io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out")
-}
-
 fn poll_fallible_connect<IO>(
     inner: &mut MidHandshake<TlsStream<IO>>,
     timeout: &mut Option<HandshakeTimeout>,
@@ -270,7 +266,10 @@ where
                 }
 
                 match inner.take_io() {
-                    Some(io) => Poll::Ready(Err((handshake_timeout_error(), io))),
+                    Some(io) => Poll::Ready(Err((
+                        io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out"),
+                        io,
+                    ))),
                     // The inner handshake just returned `Pending` above, so it must
                     // still hold its IO because `take_io()` only returns `None` for the
                     // `End` state, which `MidHandshake::poll` never leaves behind
