@@ -15,9 +15,8 @@ use std::{
 
 use rustls::{pki_types::ServerName, ClientConfig, ClientConnection};
 use tokio::io::{AsyncBufRead, AsyncRead, AsyncWrite, ReadBuf};
-use tokio::time::{self, Sleep};
 
-use crate::common::{IoSession, MidHandshake, Stream, TlsState};
+use crate::common::{HandshakeFuture, IoSession, MidHandshake, Stream, TlsState};
 
 /// A wrapper around a `rustls::ClientConfig`, providing an async `connect` method.
 #[derive(Clone)]
@@ -79,21 +78,21 @@ impl TlsConnector {
         let mut session = match ClientConnection::new_with_alpn(self.inner.clone(), domain, alpn) {
             Ok(session) => session,
             Err(error) => {
-                return Connect {
-                    inner: MidHandshake::Error {
+                return Connect(HandshakeFuture::new(
+                    MidHandshake::Error {
                         io: stream,
                         // TODO(eliza): should this really return an `io::Error`?
                         // Probably not...
                         error: io::Error::new(io::ErrorKind::Other, error),
                     },
-                    timeout: self.handshake_timeout.map(HandshakeTimeout::new),
-                };
+                    self.handshake_timeout,
+                ));
             }
         };
         f(&mut session);
 
-        Connect {
-            inner: MidHandshake::Handshaking(TlsStream {
+        Connect(HandshakeFuture::new(
+            MidHandshake::Handshaking(TlsStream {
                 io: stream,
 
                 #[cfg(not(feature = "early-data"))]
@@ -113,8 +112,8 @@ impl TlsConnector {
 
                 session,
             }),
-            timeout: self.handshake_timeout.map(HandshakeTimeout::new),
-        }
+            self.handshake_timeout,
+        ))
     }
 
     pub fn with_alpn(&self, alpn_protocols: Vec<Vec<u8>>) -> TlsConnectorWithAlpn<'_> {
@@ -169,22 +168,16 @@ impl TlsConnectorWithAlpn<'_> {
 
 /// Future returned from `TlsConnector::connect` which will resolve
 /// once the connection handshake has finished.
-pub struct Connect<IO> {
-    inner: MidHandshake<TlsStream<IO>>,
-    timeout: Option<HandshakeTimeout>,
-}
+pub struct Connect<IO>(HandshakeFuture<TlsStream<IO>>);
 
 impl<IO> Connect<IO> {
     #[inline]
     pub fn into_fallible(self) -> FallibleConnect<IO> {
-        FallibleConnect {
-            inner: self.inner,
-            timeout: self.timeout,
-        }
+        FallibleConnect(self.0)
     }
 
     pub fn get_ref(&self) -> Option<&IO> {
-        match &self.inner {
+        match self.0.handshake() {
             MidHandshake::Handshaking(sess) => Some(sess.get_ref().0),
             MidHandshake::SendAlert { io, .. } => Some(io),
             MidHandshake::Error { io, .. } => Some(io),
@@ -193,7 +186,7 @@ impl<IO> Connect<IO> {
     }
 
     pub fn get_mut(&mut self) -> Option<&mut IO> {
-        match &mut self.inner {
+        match self.0.handshake_mut() {
             MidHandshake::Handshaking(sess) => Some(sess.get_mut().0),
             MidHandshake::SendAlert { io, .. } => Some(io),
             MidHandshake::Error { io, .. } => Some(io),
@@ -206,9 +199,8 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> Future for Connect<IO> {
     type Output = io::Result<TlsStream<IO>>;
 
     #[inline]
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.as_mut().get_mut();
-        poll_fallible_connect(&mut this.inner, &mut this.timeout, cx).map_err(|(err, _)| err)
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().0.poll(cx).map_err(|(err, _)| err)
     }
 }
 
@@ -216,71 +208,13 @@ impl<IO: AsyncRead + AsyncWrite + Unpin> Future for FallibleConnect<IO> {
     type Output = Result<TlsStream<IO>, (io::Error, IO)>;
 
     #[inline]
-    fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        let this = self.as_mut().get_mut();
-        poll_fallible_connect(&mut this.inner, &mut this.timeout, cx)
+    fn poll(self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
+        self.get_mut().0.poll(cx)
     }
 }
 
 /// Like [Connect], but returns `IO` on failure.
-pub struct FallibleConnect<IO> {
-    inner: MidHandshake<TlsStream<IO>>,
-    timeout: Option<HandshakeTimeout>,
-}
-
-fn poll_fallible_connect<IO>(
-    inner: &mut MidHandshake<TlsStream<IO>>,
-    timeout: &mut Option<HandshakeTimeout>,
-    cx: &mut Context<'_>,
-) -> Poll<Result<TlsStream<IO>, (io::Error, IO)>>
-where
-    IO: AsyncRead + AsyncWrite + Unpin,
-{
-    match Pin::new(&mut *inner).poll(cx) {
-        Poll::Ready(result) => Poll::Ready(result),
-        Poll::Pending => match timeout {
-            Some(timeout) => {
-                if timeout.poll(cx).is_pending() {
-                    return Poll::Pending;
-                }
-
-                match inner.take_io() {
-                    Some(io) => Poll::Ready(Err((
-                        io::Error::new(io::ErrorKind::TimedOut, "TLS handshake timed out"),
-                        io,
-                    ))),
-                    // The inner handshake just returned `Pending` above, so it must
-                    // still hold its IO because `take_io()` only returns `None` for the
-                    // `End` state, which `MidHandshake::poll` never leaves behind
-                    // when returning `Pending`.
-                    None => unreachable!("handshake returned Pending but has no IO"),
-                }
-            }
-            _ => Poll::Pending,
-        },
-    }
-}
-
-struct HandshakeTimeout {
-    duration: Duration,
-    sleep: Option<Pin<Box<Sleep>>>,
-}
-
-impl HandshakeTimeout {
-    fn new(duration: Duration) -> Self {
-        Self {
-            duration,
-            sleep: None,
-        }
-    }
-
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        let sleep = self
-            .sleep
-            .get_or_insert_with(|| Box::pin(time::sleep(self.duration)));
-        sleep.as_mut().poll(cx)
-    }
-}
+pub struct FallibleConnect<IO>(HandshakeFuture<TlsStream<IO>>);
 
 /// A wrapper around an underlying raw stream which implements the TLS or SSL
 /// protocol.
