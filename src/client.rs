@@ -269,8 +269,14 @@ where
                     return Poll::Pending;
                 }
 
-                let io = inner.take_io().expect("handshake missing IO");
-                Poll::Ready(Err((handshake_timeout_error(), io)))
+                match inner.take_io() {
+                    Some(io) => Poll::Ready(Err((handshake_timeout_error(), io))),
+                    // The inner handshake just returned `Pending` above, so it must
+                    // still hold its IO because `take_io()` only returns `None` for the
+                    // `End` state, which `MidHandshake::poll` never leaves behind
+                    // when returning `Pending`.
+                    None => unreachable!("handshake returned Pending but has no IO"),
+                }
             }
             _ => Poll::Pending,
         },
