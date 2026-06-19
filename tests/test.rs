@@ -143,14 +143,17 @@ async fn fail() -> io::Result<()> {
     Ok(())
 }
 
-#[tokio::test]
+#[tokio::test(start_paused = true)]
 async fn handshake_timeout() {
     let (_, config) = utils::make_configs();
-    let config = TlsConnector::from(Arc::new(config))
-        .with_handshake_timeout(Some(Duration::from_millis(10)));
+    let config =
+        TlsConnector::from(Arc::new(config)).with_handshake_timeout(Some(Duration::from_secs(30)));
     let domain = ServerName::try_from(utils::TEST_SERVER_DOMAIN)
         .unwrap()
         .to_owned();
+    // The server end is held but never read from. The connect future will block
+    // waiting on the ServerHello and with all tasks pending, the start_paused
+    // runtime advances to the handshake timeout's deadline.
     let (client, _server) = tokio::io::duplex(4096);
 
     let err = config.connect(domain, client).await.unwrap_err();
