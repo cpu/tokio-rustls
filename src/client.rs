@@ -174,27 +174,6 @@ pub struct Connect<IO> {
     timeout: Option<HandshakeTimeout>,
 }
 
-struct HandshakeTimeout {
-    duration: Duration,
-    sleep: Option<Pin<Box<Sleep>>>,
-}
-
-impl HandshakeTimeout {
-    fn new(duration: Duration) -> Self {
-        Self {
-            duration,
-            sleep: None,
-        }
-    }
-
-    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<()> {
-        let sleep = self
-            .sleep
-            .get_or_insert_with(|| Box::pin(time::sleep(self.duration)));
-        sleep.as_mut().poll(cx)
-    }
-}
-
 impl<IO> Connect<IO> {
     #[inline]
     pub fn into_fallible(self) -> FallibleConnect<IO> {
@@ -279,6 +258,27 @@ where
             }
             _ => Poll::Pending,
         },
+    }
+}
+
+struct HandshakeTimeout {
+    duration: Duration,
+    sleep: Option<Pin<Box<Sleep>>>,
+}
+
+impl HandshakeTimeout {
+    fn new(duration: Duration) -> Self {
+        Self {
+            duration,
+            sleep: None,
+        }
+    }
+
+    fn poll(&mut self, cx: &mut Context<'_>) -> Poll<()> {
+        let sleep = self
+            .sleep
+            .get_or_insert_with(|| Box::pin(time::sleep(self.duration)));
+        sleep.as_mut().poll(cx)
     }
 }
 
